@@ -113,7 +113,7 @@ pub mod pallet {
 	impl<T: Config> Pallet<T> {
 
     #[pallet::weight(0)]
-		pub fn create(origin: OriginFor<T>, something: u32) -> DispatchResult {
+		pub fn create(origin: OriginFor<T>) -> DispatchResult {
 			let sender = ensure_signed(origin)?;
 			let kitty_id = Self::next_kitty_id()?;
 
@@ -138,6 +138,8 @@ pub mod pallet {
 
 			let new_kitty_id = Self::do_breed(&sender, kitty_id_1, kitty_id_2)?;
 
+      T::Currency::reserve(&sender, One::one())?;
+
       Self::deposit_event(Event::Created(sender, new_kitty_id));
 
       Ok(())
@@ -151,6 +153,9 @@ pub mod pallet {
       ensure!(Some(sender.clone()) == Owner::<T>::get(kitty_id), Error::<T>::RequireOwner);
 
       Self::do_transfer(&sender, &to, kitty_id);
+
+      T::Currency::unreserve(&sender, One::one());
+      T::Currency::reserve(&to, One::one())?;
 
       Self::deposit_event(Event::Transferred(sender, to, kitty_id));
 
