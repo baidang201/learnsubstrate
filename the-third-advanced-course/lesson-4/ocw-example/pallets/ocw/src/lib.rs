@@ -51,6 +51,8 @@ pub mod pallet {
 	const HTTP_REMOTE_REQUEST: &str = "https://api.github.com/orgs/substrate-developer-hub";
 	const HTTP_HEADER_USER_AGENT: &str = "jimmychu0807";
 
+  pub const POLKADOT_PRICE_API: &str = "https://api.coincap.io/v2/assets/polkadot";
+
 	const FETCH_TIMEOUT_PERIOD: u64 = 3000; // in milli-seconds
 	const LOCK_TIMEOUT_EXPIRATION: u64 = FETCH_TIMEOUT_PERIOD + 1000; // in milli-seconds
 	const LOCK_BLOCK_EXPIRATION: u32 = 3; // in block number
@@ -107,6 +109,45 @@ pub mod pallet {
 		public_repos: u32,
 	}
 
+  /*
+    {
+    "data": {
+      "id": "polkadot",
+      "rank": "9",
+      "symbol": "DOT",
+      "name": "Polkadot",
+      "supply": "1026804628.9624800000000000",
+      "maxSupply": null,
+      "marketCapUsd": "33137357692.5691600598151806",
+      "volumeUsd24Hr": "506028691.7176704486378871",
+      "priceUsd": "32.2723103868866734",
+      "changePercent24Hr": "-2.7110740725087445",
+      "vwap24Hr": "32.6945618398858685",
+      "explorer": "https://polkascan.io/polkadot"
+    },
+    "timestamp": 1630831504032
+  }
+  */
+
+  #[derive(Deserialize, Encode, Decode, Default, RuntimeDebug)]
+  struct PriceData {
+    data: PriceInfo,
+    timestamp: u64,
+  }
+
+  #[derive(Deserialize, Encode, Decode, Default)]
+	struct PriceInfo {
+		// Specify our own deserializing function to convert JSON string to vector of bytes
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		id: Vec<u8>,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		symbol: Vec<u8>,
+    #[serde(deserialize_with = "de_string_to_bytes")]
+		name: Vec<u8>,
+		#[serde(deserialize_with = "de_string_to_bytes")]
+		price_usd: Vec<u8>,
+	}
+
 	#[derive(Debug, Deserialize, Encode, Decode, Default)]
 	struct IndexingData(Vec<u8>, u64);
 
@@ -128,6 +169,21 @@ pub mod pallet {
 				str::from_utf8(&self.login).map_err(|_| fmt::Error)?,
 				str::from_utf8(&self.blog).map_err(|_| fmt::Error)?,
 				&self.public_repos
+				)
+		}
+	}
+
+  impl fmt::Debug for PriceInfo {
+		// `fmt` converts the vector of bytes inside the struct back to string for
+		//   more friendly display.
+		fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+			write!(
+				f,
+				"{{ id: {}, symbol: {}, name: {}, price_usd: {}}}",
+				str::from_utf8(&self.id).map_err(|_| fmt::Error)?,
+				str::from_utf8(&self.symbol).map_err(|_| fmt::Error)?,
+        str::from_utf8(&self.name).map_err(|_| fmt::Error)?,
+        str::from_utf8(&self.price_usd).map_err(|_| fmt::Error)?,
 				)
 		}
 	}
@@ -162,6 +218,7 @@ pub mod pallet {
 	#[pallet::generate_deposit(pub(super) fn deposit_event)]
 	pub enum Event<T: Config> {
 		NewNumber(Option<T::AccountId>, u64),
+    NewPrice(Option<T::AccountId>, u64, Permill),
 	}
 
 	// Errors inform users that something went wrong.
@@ -303,6 +360,16 @@ pub mod pallet {
 			});
 		}
 
+    fn append_or_replace_price(price_u64: u64, price_permill: Permill) {
+			Prices::<T>::mutate(|prices| {
+				if prices.len() == NUM_VEC_LEN {
+					let _ = prices.pop_front();
+				}
+				prices.push_back((price_u64, price_permill));
+				log::info!("Number vector: {:?}", prices);
+			});
+		}
+
 		fn fetch_price_info() -> Result<(), Error<T>> {
 			// TODO: 这是你们的功课
 
@@ -315,7 +382,27 @@ pub mod pallet {
 
 			// 这个 http 请求可得到当前 DOT 价格：
 			// [https://api.coincap.io/v2/assets/polkadot](https://api.coincap.io/v2/assets/polkadot)。
+      
 
+      match Self::fetch_n_parse_polkadot_price() {
+        Ok(price_info) => {
+          //使用不具签名交易，当前业务数据和用户没有关系
+          let price_string = str::from_utf8(&price_info.data.price_usd).map_err(|_| <Error<T>>::HttpFetchingError)?;
+          let result: Vec<&str> = price_string.split('.').collect();
+
+          let price_u64: u64 = result[0].parse::<u64>().map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+          let price_permill_part: u32 = result[1].parse::<u32>().map_err(|_| <Error<T>>::HttpFetchingError)?;
+          let price_permill: Permill = Permill::from_parts(price_permill_part);
+         
+          Self::append_or_replace_price(price_u64, price_permill);
+          Self::deposit_event(Event::NewPrice(None, price_u64, price_permill));
+
+         }
+        Err(err) => { return Err(err); }
+      }
+
+      
 			Ok(())
 		}
 
@@ -385,6 +472,23 @@ pub mod pallet {
 			Ok(gh_info)
 		}
 
+    		/// Fetch from remote and deserialize the JSON to a struct
+		fn fetch_n_parse_polkadot_price() -> Result<PriceData, Error<T>> {
+			let resp_bytes = Self::fetch_from_remote_polkadot_price().map_err(|e| {
+				log::error!("fetch_from_remote_polkadot_price error: {:?}", e);
+				<Error<T>>::HttpFetchingError
+			})?;
+
+			let resp_str = str::from_utf8(&resp_bytes).map_err(|_| <Error<T>>::HttpFetchingError)?;
+			// Print out our fetched JSON string
+			log::info!("{}", resp_str);
+
+			// Deserializing JSON to struct, thanks to `serde` and `serde_derive`
+			let price_info: PriceData =
+			serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpFetchingError)?;
+			Ok(price_info)
+		}
+
 		/// This function uses the `offchain::http` API to query the remote github information,
 		///   and returns the JSON response as vector of bytes.
 		fn fetch_from_remote() -> Result<Vec<u8>, Error<T>> {
@@ -401,6 +505,43 @@ pub mod pallet {
 			//   See: https://developer.github.com/v3/#user-agent-required
 			let pending = request
 			.add_header("User-Agent", HTTP_HEADER_USER_AGENT)
+				.deadline(timeout) // Setting the timeout time
+				.send() // Sending the request out by the host
+				.map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+			// By default, the http request is async from the runtime perspective. So we are asking the
+			//   runtime to wait here.
+			// The returning value here is a `Result` of `Result`, so we are unwrapping it twice by two `?`
+			//   ref: https://substrate.dev/rustdocs/v2.0.0/sp_runtime/offchain/http/struct.PendingRequest.html#method.try_wait
+			let response = pending
+			.try_wait(timeout)
+			.map_err(|_| <Error<T>>::HttpFetchingError)?
+			.map_err(|_| <Error<T>>::HttpFetchingError)?;
+
+			if response.code != 200 {
+				log::error!("Unexpected http request status code: {}", response.code);
+				return Err(<Error<T>>::HttpFetchingError);
+			}
+
+			// Next we fully read the response body and collect it to a vector of bytes.
+			Ok(response.body().collect::<Vec<u8>>())
+		}
+
+    		/// This function uses the `offchain::http` API to query the remote github information,
+		///   and returns the JSON response as vector of bytes.
+		fn fetch_from_remote_polkadot_price() -> Result<Vec<u8>, Error<T>> {
+			log::info!("sending request to: {}", POLKADOT_PRICE_API);
+
+			// Initiate an external HTTP GET request. This is using high-level wrappers from `sp_runtime`.
+			let request = rt_offchain::http::Request::get(POLKADOT_PRICE_API);
+
+			// Keeping the offchain worker execution time reasonable, so limiting the call to be within 3s.
+			let timeout = sp_io::offchain::timestamp()
+			.add(rt_offchain::Duration::from_millis(FETCH_TIMEOUT_PERIOD));
+
+			// For github API request, we also need to specify `user-agent` in http request header.
+			//   See: https://developer.github.com/v3/#user-agent-required
+			let pending = request
 				.deadline(timeout) // Setting the timeout time
 				.send() // Sending the request out by the host
 				.map_err(|_| <Error<T>>::HttpFetchingError)?;
