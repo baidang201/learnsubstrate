@@ -300,6 +300,7 @@ pub mod pallet {
 
 			match call {
 				Call::submit_number_unsigned(_number) => valid_tx(b"submit_number_unsigned".to_vec()),
+				Call::submit_price_unsigned(_price_u64, _price_permill) => valid_tx(b"submit_price_unsigned".to_vec()),
 				Call::submit_number_unsigned_with_signed_payload(ref payload, ref signature) => {
 					if !SignedPayload::<T>::verify::<T::AuthorityId>(payload, signature.clone()) {
 						return InvalidTransaction::BadProof.into();
@@ -347,6 +348,16 @@ pub mod pallet {
 			Self::deposit_event(Event::NewNumber(None, number));
 			Ok(())
 		}
+
+    #[pallet::weight(10000)]
+		pub fn submit_price_unsigned(origin: OriginFor<T>, price_u64: u64, price_permill: Permill) -> DispatchResult {
+			let _ = ensure_none(origin)?;
+			log::info!("submit_price_unsigned: {} ", price_u64);
+			Self::append_or_replace_price(price_u64, price_permill);
+
+			Self::deposit_event(Event::NewPrice(None, price_u64, price_permill));
+			Ok(())
+		}
 	}
 
 	impl<T: Config> Pallet<T> {
@@ -368,7 +379,7 @@ pub mod pallet {
 					let _ = prices.pop_front();
 				}
 				prices.push_back((price_u64, price_permill));
-				log::info!("Number vector: {:?}", prices);
+				log::info!("Prices vector: {:?}", prices);
 			});
 		}
 
@@ -408,9 +419,7 @@ pub mod pallet {
           let price_permill_part: u32 = new_permill_part.parse::<u32>().map_err(|_| <Error<T>>::ParseError)?;
           let price_permill: Permill = Permill::from_parts(price_permill_part);
          
-          Self::append_or_replace_price(price_u64, price_permill);
-          Self::deposit_event(Event::NewPrice(None, price_u64, price_permill));
-
+          Self::fetch_price_info_unsigned(price_u64, price_permill);
          }
         Err(err) => { return Err(err); }
       }
@@ -650,6 +659,18 @@ pub mod pallet {
 			// The case of `None`: no account is available for sending
 			log::error!("No local account available");
 			Err(<Error<T>>::NoLocalAcctForSigning)
+		}
+
+    fn fetch_price_info_unsigned(price_u64: u64, price_permill: Permill) -> Result<(), Error<T>> {
+			let call = Call::submit_price_unsigned(price_u64, price_permill);
+
+			// `submit_unsigned_transaction` returns a type of `Result<(), ()>`
+			//   ref: https://substrate.dev/rustdocs/v2.0.0/frame_system/offchain/struct.SubmitTransaction.html#method.submit_unsigned_transaction
+			SubmitTransaction::<T, Call<T>>::submit_unsigned_transaction(call.into())
+			.map_err(|_| {
+				log::error!("Failed in offchain_unsigned_tx");
+				<Error<T>>::OffchainUnsignedTxError
+			})
 		}
 	}
 
