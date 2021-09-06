@@ -135,6 +135,7 @@ pub mod pallet {
     timestamp: u64,
   }
 
+  #[serde(rename_all = "camelCase")]
   #[derive(Deserialize, Encode, Decode, Default)]
 	struct PriceInfo {
 		// Specify our own deserializing function to convert JSON string to vector of bytes
@@ -497,7 +498,10 @@ pub mod pallet {
 
 			// Deserializing JSON to struct, thanks to `serde` and `serde_derive`
 			let price_info: PriceData =
-			serde_json::from_str(&resp_str).map_err(|_| <Error<T>>::HttpFetchingError)?;
+			serde_json::from_str(&resp_str).map_err(|e| {
+				log::error!("fetch_from_remote_polkadot_price ParseError error: {:?}", e);
+				<Error<T>>::ParseError
+			})?;
 			Ok(price_info)
 		}
 
