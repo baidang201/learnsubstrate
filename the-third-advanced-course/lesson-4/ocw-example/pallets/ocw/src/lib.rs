@@ -239,6 +239,7 @@ pub mod pallet {
 
 		// Error returned when fetching github info
 		HttpFetchingError,
+		ParseError,
 	}
 
 	#[pallet::hooks]
@@ -387,12 +388,23 @@ pub mod pallet {
       match Self::fetch_n_parse_polkadot_price() {
         Ok(price_info) => {
           //使用不具签名交易，当前业务数据和用户没有关系
-          let price_string = str::from_utf8(&price_info.data.price_usd).map_err(|_| <Error<T>>::HttpFetchingError)?;
+          let price_string = str::from_utf8(&price_info.data.price_usd).map_err(|_| <Error<T>>::ParseError)?;
           let result: Vec<&str> = price_string.split('.').collect();
 
-          let price_u64: u64 = result[0].parse::<u64>().map_err(|_| <Error<T>>::HttpFetchingError)?;
+          let price_u64: u64 = result[0].parse::<u64>().map_err(|_| <Error<T>>::ParseError)?;
 
-          let price_permill_part: u32 = result[1].parse::<u32>().map_err(|_| <Error<T>>::HttpFetchingError)?;
+          let mut new_substring = result[1].get(0..6).unwrap();
+          let mut new_append_count = 0;
+          if (new_substring.chars().count() < 6) {
+            new_append_count = 6 - new_substring.chars().count();
+          }
+
+          let mut new_substring_vec = new_substring.as_bytes().to_vec();
+          let mut append_vec = vec![b'0'; new_append_count];
+          new_substring_vec.append(&mut append_vec);
+          let new_permill_part = str::from_utf8(&new_substring_vec).map_err(|_| <Error<T>>::ParseError)?;
+
+          let price_permill_part: u32 = new_permill_part.parse::<u32>().map_err(|_| <Error<T>>::ParseError)?;
           let price_permill: Permill = Permill::from_parts(price_permill_part);
          
           Self::append_or_replace_price(price_u64, price_permill);
