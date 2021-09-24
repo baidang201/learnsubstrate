@@ -24,6 +24,21 @@ target/release/node-template benchmark \
 pub fn do_something(origin: OriginFor<T>, something: u32) -> DispatchResult 
 ```
 
+
+或者使用动态生成weights.rs
+```
+target/release/node-template benchmark \
+ --chain=dev \
+--steps=50 \
+--repeat=20 \
+--pallet=pallet_template \
+--extrinsic=do_something \
+--execution=wasm \
+--wasm-execution=compiled \
+--output=./pallets/template/src/weights.rs \
+--template=./.maintain/frame-weight-template.hbs
+
+```
 # 生成chain-spec文件
 
 ```
